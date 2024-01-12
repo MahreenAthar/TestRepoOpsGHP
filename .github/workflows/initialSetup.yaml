@@ -9,77 +9,85 @@ jobs:
   track_issue:
     runs-on: ubuntu-latest
     steps:
-      - name: Generate token
-        id: generate_token
-        # ... [rest of your token generation step]
-
       - name: Get project data
         env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
-          ORGANIZATION: 'dnnaeinc'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          USER: 'MahreenAthar'
           PROJECT_NUMBER: 1
         run: |
-          # ... [rest of your project data step]
+          gh api graphql -f query='
+            query($user: String!, $number: Int!) {
+              user(login: $user) {
+                projectV2(number: $number) {
+                  id
+                  fields(first:20) {
+                    nodes {
+                      ... on ProjectV2Field {
+                        id
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }' -f user=$USER -F number=$PROJECT_NUMBER > project_data.json
+          echo 'PROJECT_ID='$(jq '.data.user.projectV2.id' project_data.json) >> $GITHUB_ENV
+          echo 'START_DATE_FIELD_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name == "Start Date") | .id' project_data.json) >> $GITHUB_ENV
+          echo 'END_DATE_FIELD_ID='$(jq '.data.user.projectV2.fields.nodes[] | select(.name == "End Date") | .id' project_data.json) >> $GITHUB_ENV
 
-          # Add environment variables for Start Date and End Date fields
-          echo 'START_DATE_FIELD_ID='$(jq '.data.organization.projectV2.fields.nodes[] | select(.name == "Start Date") | .id' project_data.json) >> $GITHUB_ENV
-          echo 'END_DATE_FIELD_ID='$(jq '.data.organization.projectV2.fields.nodes[] | select(.name == "End Date") | .id' project_data.json) >> $GITHUB_ENV
-
-      - name: Add Issue to Project
+      - name: Add Issue to Project and Set Dates
         env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
-          ISSUE_ID: ${{ github.event.issue.node_id }}
-          ISSUE_CREATED_AT: ${{ github.event.issue.created_at }}
-          ISSUE_CLOSED_AT: ${{ github.event.issue.closed_at }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          item_id="$( gh api graphql -f query='
+          ISSUE_ID="${{ github.event.issue.node_id }}"
+          PROJECT_ID="${{ env.PROJECT_ID }}"
+          START_DATE_FIELD_ID="${{ env.START_DATE_FIELD_ID }}"
+          END_DATE_FIELD_ID="${{ env.END_DATE_FIELD_ID }}"
+
+          # Add Issue to Project
+          gh api graphql -f query='
             mutation($project:ID!, $issue:ID!) {
               addProjectV2ItemById(input: {projectId: $project, contentId: $issue}) {
                 item {
                   id
                 }
               }
-            }' -f project=$PROJECT_ID -f issue=$ISSUE_ID --jq '.data.addProjectV2ItemById.item.id')"
-          echo 'ITEM_ID='$item_id >> $GITHUB_ENV
+            }' -f project=$PROJECT_ID -f issue=$ISSUE_ID --jq '.data.addProjectV2ItemById.item.id'
 
-      - name: Set Start and End Dates
-        env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
-        run: |
           # Set Start Date when issue is opened
           if [ "${{ github.event.action }}" == "opened" ]; then
             gh api graphql -f query='
-              mutation ($project: ID!, $item: ID!, $start_date_field: ID!, $date_value: Date!) {
+              mutation ($project: ID!, $item: ID!, $field: ID!, $date: Date!) {
                 updateProjectV2ItemFieldValue(input: {
                   projectId: $project
                   itemId: $item
-                  fieldId: $start_date_field
+                  fieldId: $field
                   value: {
-                    date: $date_value
+                    date: $date
                   }
                 }) {
                   projectV2Item {
                     id
                   }
                 }
-              }' -f project=$PROJECT_ID -f item=$ITEM_ID -f start_date_field=$START_DATE_FIELD_ID -f date_value=$ISSUE_CREATED_AT --silent
+              }' -f project=$PROJECT_ID -f item=$ISSUE_ID -f field=$START_DATE_FIELD_ID -f date="${{ github.event.issue.created_at }}" --silent
           fi
 
           # Set End Date when issue is closed
           if [ "${{ github.event.action }}" == "closed" ]; then
             gh api graphql -f query='
-              mutation ($project: ID!, $item: ID!, $end_date_field: ID!, $date_value: Date!) {
+              mutation ($project: ID!, $item: ID!, $field: ID!, $date: Date!) {
                 updateProjectV2ItemFieldValue(input: {
                   projectId: $project
                   itemId: $item
-                  fieldId: $end_date_field
+                  fieldId: $field
                   value: {
-                    date: $date_value
+                    date: $date
                   }
                 }) {
                   projectV2Item {
                     id
                   }
                 }
-              }' -f project=$PROJECT_ID -f item=$ITEM_ID -f end_date_field=$END_DATE_FIELD_ID -f date_value=$ISSUE_CLOSED_AT --silent
+              }' -f project=$PROJECT_ID -f item=$ISSUE_ID -f field=$END_DATE_FIELD_ID -f date="${{ github.event.issue.closed_at }}" --silent
           fi
